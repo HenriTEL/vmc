@@ -3,16 +3,17 @@
 ## Getting Started
 
 ```bash
+# Run the following from the outside of a rust project
 rusup update # Update rust
-cargo install espup ldproxy
+cargo install espup cargo-espflash ldproxy cargo-generate
 espup install # Install Espressif Rust ecosystem
-cargo install cargo-espflash
 ```
 
 ## Developing
 
 ```bash
-source $HOME/export-esp.sh # Set some envs
+. $HOME/export-esp.sh # Set some envs
+cargo espflash flash --monitor # Select the tty entry
 ```
 
 ## Board info
@@ -22,10 +23,9 @@ Chip version: `ESP32-Pico-V3-02`
 Arch: `Xtensa`  
 Processor version: `ESP32`  
 
-## How the project was initialize
+## How the project was initialized
 
 ```bash
-cargo install cargo-generate
 cargo generate esp-rs/esp-idf-template cargo
 ```
 

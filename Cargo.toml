@@ -1,13 +1,13 @@
 [package]
-name = "vmc"
+name = "vmc-rs"
 version = "0.1.0"
-authors = ["Henri Hannetel <henri.hannetel@pm.me>"]
+authors = ["HenriTEL <henri.hannetel@pm.me>"]
 edition = "2021"
 resolver = "2"
 rust-version = "1.77"
 
 [[bin]]
-name = "vmc"
+name = "vmc-rs"
 harness = false # do not use the built in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]
@@ -25,8 +25,8 @@ experimental = ["esp-idf-svc/experimental"]
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+esp-idf-hal = { version = "0.45.2", features = ["rmt-legacy"] }
 anyhow = "1.0.98"
-esp-idf-hal = "0.45.2"
 
 [build-dependencies]
 embuild = "0.33"
