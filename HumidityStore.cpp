@@ -4,157 +4,143 @@ const char* HumidityStore::NVS_NAMESPACE = "humidity_store";
 const char* HumidityStore::LATEST_KEY_TRACKER_NAME = "next_key";
 
 bool HumidityStore::begin() {
-    if (_is_initialized) {
-        Serial.println("HumidityStore: Already initialized.");
-        return true;
-    }
-    if (!_preferences.begin(NVS_NAMESPACE, false)) {
-        Serial.println("HumidityStore: Failed to initialize NVS.");
-        _is_initialized = false;
-        return false;
-    }
-    _is_initialized = true;
-    Serial.println("HumidityStore: NVS Initialized.");
+  if (_is_initialized) {
+    Serial.println("HumidityStore: Already initialized.");
     return true;
+  }
+  if (!_preferences.begin(NVS_NAMESPACE, false)) {
+    Serial.println("HumidityStore: Failed to initialize NVS.");
+    _is_initialized = false;
+    return false;
+  }
+  _is_initialized = true;
+  Serial.println("HumidityStore: NVS Initialized.");
+  return true;
 }
 
 bool HumidityStore::write(const uint8_t data[]) {
-    if (!_is_initialized) {
-        Serial.println("HumidityStore: Not initialized, cannot write block.");
-        return false;
+  if (!_is_initialized) {
+    Serial.println("HumidityStore: Not initialized, cannot write block.");
+    return false;
+  }
+
+  uint16_t current_key_index = getNextKeyIndex();
+  String nvs_key_str = String(current_key_index);
+
+  // Stored block: [data (RH_STORE_BLOCK_SIZE)] + [crc (2 bytes)]
+  size_t total_block_size = RH_STORE_BLOCK_SIZE + sizeof(uint16_t);
+  uint16_t crc = CRC16(data, RH_STORE_BLOCK_SIZE);
+
+  memcpy(_block_buffer, data, RH_STORE_BLOCK_SIZE);
+  _block_buffer[RH_STORE_BLOCK_SIZE] = crc & 0xFF;
+  _block_buffer[RH_STORE_BLOCK_SIZE + 1] = (crc >> 8) & 0xFF;
+
+  size_t bytes_written_to_nvs = _preferences.putBytes(nvs_key_str.c_str(), _block_buffer, total_block_size);
+
+  if (bytes_written_to_nvs != total_block_size) {
+    Serial.printf("HumidityStore Error: Failed to write NVS block for key %s. Expected %u, wrote %u\n", nvs_key_str.c_str(), total_block_size, bytes_written_to_nvs);
+    // Reset key tracker
+    if (!_preferences.putUShort(LATEST_KEY_TRACKER_NAME, 0)) {
+      Serial.println("HumidityStore Error: Failed to update next key tracker.");
     }
+    return false;
+  }
 
-    uint16_t current_key_index = getNextKeyIndex();
-    String nvs_key_str = String(current_key_index);
+  uint16_t next_key_idx = (current_key_index + 1) % MAX_DATA_KEYS;
+  if (!_preferences.putUShort(LATEST_KEY_TRACKER_NAME, next_key_idx)) {
+    Serial.println("HumidityStore Error: Failed to update next key tracker.");
+    return false;
+  }
 
-    // Stored block: [data (RH_STORE_BLOCK_SIZE)] + [crc (2 bytes)]
-    size_t total_block_size = RH_STORE_BLOCK_SIZE + sizeof(uint16_t);
-    uint8_t *full_block_buffer = (uint8_t *)malloc(total_block_size);
-    if (!full_block_buffer) {
-        Serial.println("HumidityStore Error: Failed to allocate memory for write buffer.");
-        return false;
-    }
-    uint16_t crc = CRC16(data, RH_STORE_BLOCK_SIZE);
-
-    memcpy(full_block_buffer, data, RH_STORE_BLOCK_SIZE);
-    memcpy(full_block_buffer + RH_STORE_BLOCK_SIZE, &crc, sizeof(uint16_t));
-
-    size_t bytes_written_to_nvs = _preferences.putBytes(nvs_key_str.c_str(), full_block_buffer, total_block_size);
-    free(full_block_buffer);
-
-    if (bytes_written_to_nvs != total_block_size) {
-        Serial.printf("HumidityStore Error: Failed to write NVS block for key %s. Expected %u, wrote %u\n", nvs_key_str.c_str(), total_block_size, bytes_written_to_nvs);
-        // Reset key tracker
-        if (!_preferences.putUShort(LATEST_KEY_TRACKER_NAME, 0)) {
-            Serial.println("HumidityStore Error: Failed to update next key tracker.");
-        }
-        return false;
-    }
-
-    uint16_t next_key_idx = (current_key_index + 1) % MAX_DATA_KEYS;
-    if (!_preferences.putUShort(LATEST_KEY_TRACKER_NAME, next_key_idx)) {
-        Serial.println("HumidityStore Error: Failed to update next key tracker.");
-        return false;
-    }
-
-    Serial.printf("HumidityStore: Wrote block to key %s (CRC: 0x%04X).\n",
-                  nvs_key_str.c_str(), crc);
-    return true;
+  Serial.printf("HumidityStore: Wrote block to key %s (CRC: 0x%04X).\n",
+                nvs_key_str.c_str(), crc);
+  return true;
 }
 
-bool HumidityStore::read(uint16_t key_index, uint8_t data[]) {
+int32_t HumidityStore::read(uint16_t key_index, uint8_t data[]) {
 
-    if (!_is_initialized) {
-        Serial.println("HumidityStore: Not initialized, cannot read block.");
-        return false;
-    }
+  if (!_is_initialized) {
+    Serial.println("HumidityStore: Not initialized, cannot read block.");
+    return -1;
+  }
 
-    String nvs_key_str = String(key_index);
+  String nvs_key_str = String(key_index);
+  Serial.printf("HumidityStore Reading %s\n", nvs_key_str);
 
-    size_t stored_block_size = _preferences.getBytesLength(nvs_key_str.c_str());
-    if (stored_block_size == 0) {
-        // Key doesn't exist or NVS error. Not an error for reading, just means no data at this key.
-        return false;
-    }
+  size_t stored_block_size = _preferences.getBytesLength(nvs_key_str.c_str());
+  if (stored_block_size == 0) {
+    // Key doesn't exist or NVS error. Not an error for reading, just means no data at this key.
+    return 0;
+  }
 
-    // Stored block must be at least the size of CRC + the size of actual data
-    if (stored_block_size != RH_STORE_BLOCK_SIZE + sizeof(uint16_t)) {
-        Serial.printf("HumidityStore Error: Unexpected block size for key %s (%u bytes). Corrupted?\n", nvs_key_str.c_str(), stored_block_size);
-        return false;
-    }
+  // Stored block must be at least the size of CRC + 1 byte
+  if (stored_block_size <= sizeof(uint16_t)) {
+    Serial.printf("HumidityStore Error: Unexpected block size for key %s (%u bytes). Corrupted?\n", nvs_key_str.c_str(), stored_block_size);
+    return -2;
+  }
 
-    uint8_t *full_block_buffer = (uint8_t *)malloc(stored_block_size);
-    if (!full_block_buffer) {
-        Serial.println("HumidityStore Error: Failed to allocate memory for reading block.");
-        return false;
-    }
+  size_t bytes_read_from_nvs = _preferences.getBytes(nvs_key_str.c_str(), _block_buffer, stored_block_size);
+  if (bytes_read_from_nvs != stored_block_size) {
+    Serial.printf("HumidityStore Error: Failed to read NVS block for key %s. Expected %u, read %u\n", nvs_key_str.c_str(), stored_block_size, bytes_read_from_nvs);
+    return -3;
+  }
 
-    size_t bytes_read_from_nvs = _preferences.getBytes(nvs_key_str.c_str(), full_block_buffer, stored_block_size);
-    if (bytes_read_from_nvs != stored_block_size) {
-        free(full_block_buffer);
-        Serial.printf("HumidityStore Error: Failed to read NVS block for key %s. Expected %u, read %u\n", nvs_key_str.c_str(), stored_block_size, bytes_read_from_nvs);
-        return false;
-    }
+  // Reconstruct CRC (little-endian)
+  uint16_t stored_crc = _block_buffer[stored_block_size - sizeof(uint16_t)] | (_block_buffer[stored_block_size - sizeof(uint16_t) + 1] << 8);
 
-    const uint8_t *data_ptr = full_block_buffer;
-    uint16_t stored_crc;
-    memcpy(&stored_crc, full_block_buffer + RH_STORE_BLOCK_SIZE, sizeof(uint16_t)); // CRC is at the end of the block
+  uint16_t calculated_crc = CRC16(_block_buffer, stored_block_size - sizeof(uint16_t));
 
-    uint16_t calculated_crc = CRC16(data_ptr, RH_STORE_BLOCK_SIZE);
+  if (calculated_crc != stored_crc) {
+    Serial.printf("HumidityStore Error: CRC mismatch for key %s! Stored: 0x%04X, Calculated: 0x%04X. Data corrupted.\n",
+                  nvs_key_str.c_str(), stored_crc, calculated_crc);
+    return -4;
+  }
 
-    if (calculated_crc != stored_crc) {
-        Serial.printf("HumidityStore Error: CRC mismatch for key %s! Stored: 0x%04X, Calculated: 0x%04X. Data corrupted.\n",
-                      nvs_key_str.c_str(), stored_crc, calculated_crc);
-        free(full_block_buffer);
-        return false;
-    }
+  memcpy(data, _block_buffer, stored_block_size - sizeof(uint16_t));
 
-    memcpy(data, data_ptr, RH_STORE_BLOCK_SIZE);
-    free(full_block_buffer);
-
-    Serial.printf("HumidityStore: Read block from key %s (CRC: 0x%04X).\n",
-                  nvs_key_str.c_str(), stored_crc);
-    return true;
+  Serial.printf("HumidityStore: Read block from key %s (CRC: 0x%04X).\n",
+                nvs_key_str.c_str(), stored_crc);
+  return stored_block_size - sizeof(uint16_t);
 }
 
 bool HumidityStore::clearAll() {
-    if (!_is_initialized) {
-        Serial.println("HumidityStore: Not initialized, cannot clear.");
-        return false;
+  if (!_is_initialized) {
+    Serial.println("HumidityStore: Not initialized, cannot clear.");
+    return false;
+  }
+  Serial.println("WARNING: Will remove all humidity data in 10 seconds!");
+  delay(10000);
+  bool success = true;
+  for (uint16_t i = 0; i < MAX_DATA_KEYS; ++i) {
+    String nvs_key_str = String(i);
+    if (_preferences.isKey(nvs_key_str.c_str())) {
+      if (!_preferences.remove(nvs_key_str.c_str())) {
+        Serial.printf("HumidityStore: Failed to remove key %s\n", nvs_key_str.c_str());
+        success = false;
+      }
     }
-    Serial.println("WARNING: Will remove all humidity data in 10 seconds!");
-    delay(10000);
-    bool success = true;
-    for (uint16_t i = 0; i < MAX_DATA_KEYS; ++i) {
-        String nvs_key_str = String(i);
-        if (_preferences.isKey(nvs_key_str.c_str())) {
-            if (!_preferences.remove(nvs_key_str.c_str())) {
-                Serial.printf("HumidityStore: Failed to remove key %s\n", nvs_key_str.c_str());
-                success = false;
-            }
-        }
+  }
+  if (_preferences.isKey(LATEST_KEY_TRACKER_NAME)) {
+    if (!_preferences.remove(LATEST_KEY_TRACKER_NAME)) {
+      Serial.printf("HumidityStore: Failed to remove tracker key %s\n", LATEST_KEY_TRACKER_NAME);
+      success = false;
     }
-    if (_preferences.isKey(LATEST_KEY_TRACKER_NAME)) {
-        if (!_preferences.remove(LATEST_KEY_TRACKER_NAME)) {
-            Serial.printf("HumidityStore: Failed to remove tracker key %s\n", LATEST_KEY_TRACKER_NAME);
-            success = false;
-        }
-    }
-    // Reset tracker to 0
-    _preferences.putUShort(LATEST_KEY_TRACKER_NAME, 0);
+  }
+  // Reset tracker to 0
+  _preferences.putUShort(LATEST_KEY_TRACKER_NAME, 0);
 
-    if(success) Serial.println("HumidityStore: All data cleared.");
-    else Serial.println("HumidityStore: Partial or failed clear operation.");
-    return success;
+  if (success) Serial.println("HumidityStore: All data cleared.");
+  else Serial.println("HumidityStore: Partial or failed clear operation.");
+  return success;
 }
 
 bool HumidityStore::isInitialized() const {
-    return _is_initialized;
+  return _is_initialized;
 }
 
 uint8_t HumidityStore::rh_encode(float rh_percent) {
   const uint16_t RH_MAX = RH_MIN + UCHAR_MAX;
-  uint16_t scaled_rh = static_cast<uint16_t>(round(rh_percent * 10.0)); // e.g., 55.3% -> 553
+  uint16_t scaled_rh = static_cast<uint16_t>(round(rh_percent * 10.0));  // e.g., 55.3% -> 553
 
   // Clamp to practical range, 45.0% - 70.5% by default
   if (scaled_rh < RH_MIN) {
@@ -167,34 +153,35 @@ uint8_t HumidityStore::rh_encode(float rh_percent) {
 }
 
 float HumidityStore::rh_decode(uint8_t rh_encoded) {
-    uint16_t scaled_rh = static_cast<uint16_t>(rh_encoded) + RH_MIN;
-    return static_cast<float>(scaled_rh) / 10.0f;
+  uint16_t scaled_rh = static_cast<uint16_t>(rh_encoded) + RH_MIN;
+  return static_cast<float>(scaled_rh) / 10.0f;
 }
 
 uint16_t HumidityStore::getNextKeyIndex() {
-    if (!_is_initialized) {
-        Serial.println("HumidityStore: Not initialized, cannot get next key index.");
-        return 0;
-    }
-    return _preferences.getUShort(LATEST_KEY_TRACKER_NAME, 0);
+  if (!_is_initialized) {
+    Serial.println("HumidityStore: Not initialized, cannot get next key index.");
+    return 0;
+  }
+  return _preferences.getUShort(LATEST_KEY_TRACKER_NAME, 0);
 }
 
 void HumidityStore::end() {
-    if (_is_initialized) {
-        _preferences.end();
-        _is_initialized = false;
-        Serial.println("HumidityStore: NVS Ended.");
-    }
+  if (_is_initialized) {
+    _preferences.end();
+    _is_initialized = false;
+    Serial.println("HumidityStore: NVS Ended.");
+  }
 }
 
-HumidityStore::HumidityStore() : _is_initialized(false) {
-    // Constructor
+HumidityStore::HumidityStore()
+  : _is_initialized(false) {
+  // Constructor
 }
 
 HumidityStore::~HumidityStore() {
-    if (_is_initialized) {
-        end();
-    }
+  if (_is_initialized) {
+    end();
+  }
 }
 
 // CRC 16 implementation copied from https://github.com/espressif/arduino-esp32/blob/6bfcd6d9a9a7ecd07d656a7a88673c93e7d4d537/libraries/SD/src/sd_diskio_crc.c
@@ -215,7 +202,7 @@ const uint16_t m_CRC16Table[256] = {
   0x9FF8, 0x6E17, 0x7E36, 0x4E55, 0x5E74, 0x2E93, 0x3EB2, 0x0ED1, 0x1EF0
 };
 
-uint16_t CRC16(const uint8_t *data, uint16_t length) {
+uint16_t CRC16(const uint8_t* data, uint16_t length) {
   uint16_t crc = 0;
   for (uint16_t i = 0; i < length; i++) {
     crc = (crc << 8) ^ m_CRC16Table[((crc >> 8) ^ data[i]) & 0x00FF];

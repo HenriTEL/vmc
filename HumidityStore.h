@@ -1,10 +1,11 @@
 #ifndef HUMIDITY_STORE_H
 #define HUMIDITY_STORE_H
 
-
 #include <math.h>  // For round
 #include <Arduino.h>
 #include <Preferences.h>
+
+#define RH_STORE_BLOCK_SIZE 1440
 
 uint16_t CRC16(const uint8_t* data, uint16_t length);
 
@@ -42,7 +43,7 @@ public:
      * @param data Array that will store the read rH values.
      * @return true if the data was successfully read and CRC is valid, false otherwise.
      */
-  bool read(uint16_t key_index, uint8_t data[]);
+  int32_t read(uint16_t key_index, uint8_t data[]);
 
   uint8_t rh_encode(float rh_percent);
 
@@ -74,6 +75,8 @@ public:
 private:
   Preferences _preferences;
   bool _is_initialized;
+  // Preallocated buffer for storing + CRC
+  uint8_t _block_buffer[RH_STORE_BLOCK_SIZE + sizeof(uint16_t)];
 
   // Configuration constants
   static const char* NVS_NAMESPACE;
